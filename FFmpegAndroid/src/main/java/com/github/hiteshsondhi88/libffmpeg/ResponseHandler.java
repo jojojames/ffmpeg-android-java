@@ -1,6 +1,6 @@
 package com.github.hiteshsondhi88.libffmpeg;
 
-abstract interface ResponseHandler {
+public abstract interface ResponseHandler {
 
     /**
      * on Start
