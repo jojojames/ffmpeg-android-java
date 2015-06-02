@@ -1,9 +1,11 @@
 package com.github.hiteshsondhi88.libffmpeg;
 
 import android.content.Context;
+import android.os.AsyncTask;
 import android.text.TextUtils;
 
 import java.lang.reflect.Array;
+import java.util.ArrayList;
 import java.util.Map;
 
 import com.github.hiteshsondhi88.libffmpeg.exceptions.FFmpegCommandAlreadyRunningException;
@@ -21,6 +23,10 @@ public class FFmpeg implements FFmpegInterface {
 
     private static FFmpeg instance = null;
 
+    private boolean executeOnExecutor = false;
+    private boolean canRunMultipleCommands = false;
+    private ArrayList<FFmpegExecuteAsyncTask> listOfTasks = new ArrayList<>();
+
     private FFmpeg(Context context) {
         this.context = context.getApplicationContext();
         Log.setDEBUG(Util.isDebug(this.context));
@@ -31,6 +37,14 @@ public class FFmpeg implements FFmpegInterface {
             instance = new FFmpeg(context);
         }
         return instance;
+    }
+
+    public void setExecuteOnExecutor(boolean executeOnExecutor) {
+        this.executeOnExecutor = executeOnExecutor;
+    }
+
+    public void setCanRunMultipleCommands(boolean canRunMultipleCommands) {
+        this.canRunMultipleCommands = canRunMultipleCommands;
     }
 
     @Override
@@ -63,14 +77,28 @@ public class FFmpeg implements FFmpegInterface {
 
     @Override
     public void execute(Map<String, String> environvenmentVars, String[] cmd, FFmpegExecuteResponseHandler ffmpegExecuteResponseHandler) throws FFmpegCommandAlreadyRunningException {
-        if (ffmpegExecuteAsyncTask != null && !ffmpegExecuteAsyncTask.isProcessCompleted()) {
-            throw new FFmpegCommandAlreadyRunningException("FFmpeg command is already running, you are only allowed to run single command at a time");
+        if (!canRunMultipleCommands) {
+            if (ffmpegExecuteAsyncTask != null && !ffmpegExecuteAsyncTask.isProcessCompleted()) {
+                throw new FFmpegCommandAlreadyRunningException("FFmpeg command is already running, you are only allowed to run single command at a time");
+            }
         }
+
         if (cmd.length != 0) {
             String[] ffmpegBinary = new String[] { FileUtils.getFFmpeg(context, environvenmentVars) };
             String[] command = concatenate(ffmpegBinary, cmd);
-            ffmpegExecuteAsyncTask = new FFmpegExecuteAsyncTask(command , timeout, ffmpegExecuteResponseHandler);
-            ffmpegExecuteAsyncTask.execute();
+
+            FFmpegExecuteAsyncTask newTask = new FFmpegExecuteAsyncTask(command , timeout, ffmpegExecuteResponseHandler);
+            if (canRunMultipleCommands) {
+                listOfTasks.add(newTask);
+            } else {
+                ffmpegExecuteAsyncTask = newTask;
+            }
+
+            if (executeOnExecutor) {
+                newTask.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+            } else {
+                newTask.execute();
+            }
         } else {
             throw new IllegalArgumentException("shell command cannot be empty");
         }
@@ -111,12 +139,33 @@ public class FFmpeg implements FFmpegInterface {
 
     @Override
     public boolean isFFmpegCommandRunning() {
-        return ffmpegExecuteAsyncTask != null && !ffmpegExecuteAsyncTask.isProcessCompleted();
+        if (!canRunMultipleCommands) {
+            return ffmpegExecuteAsyncTask != null && !ffmpegExecuteAsyncTask.isProcessCompleted();
+        } else {
+            for (FFmpegExecuteAsyncTask ffmpegTask : listOfTasks) {
+                if (!ffmpegTask.isProcessCompleted()) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
     }
 
     @Override
     public boolean killRunningProcesses() {
-        return Util.killAsync(ffmpegLoadLibraryAsyncTask) || Util.killAsync(ffmpegExecuteAsyncTask);
+        boolean returnVal = Util.killAsync(ffmpegLoadLibraryAsyncTask);
+        if (!returnVal) {
+            if (!canRunMultipleCommands) {
+                Util.killAsync(ffmpegExecuteAsyncTask);
+            } else {
+                for (FFmpegExecuteAsyncTask ffmpegTask : listOfTasks) {
+                    returnVal |= Util.killAsync(ffmpegTask);
+                }
+            }
+        }
+
+        return returnVal;
     }
 
     @Override
